@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 from serpapi import GoogleSearch
+import pandas as pd  # Needed for building a DataFrame
 
 class PriceComparator:
     def __init__(self):
@@ -31,30 +32,63 @@ class PriceComparator:
 
             if "shopping_results" in results and results["shopping_results"]:
                 item = results["shopping_results"][0]
+                price = item.get("price", "N/A")
+                shipping = item.get("shipping", "N/A")
+                total_cost = self.calculate_total_cost(price, shipping)
+
                 return {
-                    "title": item.get("title", "N/A"),
-                    "price": item.get("price", "N/A"),
-                    "url": item.get("link", "N/A")
+                    "Platform": site.split('.')[0].capitalize(),
+                    "Title": item.get("title", "N/A"),
+                    "Price": price,
+                    "Shipping": shipping,
+                    "Total Cost": total_cost,
+                    "URL": item.get("link", "N/A")
                 }
 
             for result in results.get("organic_results", []):
                 title = result.get("title", "N/A")
                 url = result.get("link", "N/A")
-                price = "N/A"
-
                 detected = result.get("rich_snippet", {}).get("bottom", {}).get("detected_extensions", {})
+
+                price = "N/A"
+                shipping = "N/A"
+
                 if "price" in detected:
                     price = f"${detected['price']}"
                 elif "price_from" in detected and "price_to" in detected:
                     price = f"${detected['price_from']} - ${detected['price_to']}"
 
+                if "shipping" in detected:
+                    shipping = f"${detected['shipping']}"
+
+                total_cost = self.calculate_total_cost(price, shipping)
+
                 if price != "N/A":
-                    return {"title": title, "price": price, "url": url}
+                    return {
+                        "Platform": site.split('.')[0].capitalize(),
+                        "Title": title,
+                        "Price": price,
+                        "Shipping": shipping,
+                        "Total Cost": total_cost,
+                        "URL": url
+                    }
 
             return None
         except Exception as e:
             print(f"Error searching {site}: {e}")
             return None
+
+    def calculate_total_cost(self, price, shipping):
+        """Helper to calculate total cost."""
+        try:
+            price_val = float(price.replace('$', '').replace(',', '').strip()) if isinstance(price, str) else 0.0
+            shipping_val = 0.0
+            if isinstance(shipping, str) and '$' in shipping:
+                shipping_val = float(shipping.replace('$', '').replace(',', '').strip())
+            return f"${price_val + shipping_val:.2f}"
+        except Exception as e:
+            print(f"Total cost calculation error: {e}")
+            return "N/A"
 
     def search_amazon(self, query):
         return self.serpapi_search(query, "amazon.com")
@@ -82,16 +116,27 @@ class PriceComparator:
                 query = self.normalize_query_with_llm(query)
                 st.write(f"🧠 Normalized Query: `{query}`")
 
+            # Perform searches
             amazon = self.search_amazon(query)
             walmart = self.search_walmart(query)
             ebay = self.search_ebay(query)
 
-            st.markdown("### 💵 Price Comparison Table")
-            st.markdown("| Platform | Title | Price | URL |")
-            st.markdown("|----------|-------|-------|-----|")
+            # Collect results into a list
+            results = [res for res in [amazon, walmart, ebay] if res]
 
-            for name, result in [("Amazon", amazon), ("Walmart", walmart), ("eBay", ebay)]:
-                if result:
-                    st.markdown(f"| {name} | {result['title']} | {result['price']} | [Link]({result['url']}) |")
-                else:
-                    st.markdown(f"| {name} | Not found | - | - |")
+            if results:
+                # Convert to DataFrame
+                df = pd.DataFrame(results)
+
+                # Convert URL to clickable hyperlink
+                df['URL'] = df['URL'].apply(lambda x: f"[Link]({x})" if x != "N/A" else "-")
+
+                # Display a table with clickable hyperlinks
+                st.markdown("### 💵 Price Comparison Table")
+                st.markdown(
+                    df.to_markdown(index=False),
+                    unsafe_allow_html=True
+                )
+            else:
+                st.warning("No results found!")
+
