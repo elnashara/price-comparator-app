@@ -1,7 +1,9 @@
-import streamlit as st
+import io
 import requests
+import pandas as pd
+import streamlit as st
 from serpapi import GoogleSearch
-import pandas as pd  # Needed for building a DataFrame
+from datetime import datetime
 
 class PriceComparator:
     def __init__(self):
@@ -19,17 +21,23 @@ class PriceComparator:
         except Exception as e:
             print("LLM Error:", e)
         return query
-
+    
     def serpapi_search(self, query, site):
         params = {
             "engine": "google",
             "q": f"{query} site:{site}",
-            "api_key": self.serpapi_key
+            "api_key": self.serpapi_key,
+            "no_cache": True  # <-- Force fresh results
         }
         try:
             search = GoogleSearch(params)
             results = search.get_dict()
 
+            # # 🚨 DEBUG: Show raw response to help troubleshooting
+            # st.subheader(f"🔍 Raw SerpAPI Results for {site}")
+            # st.json(results)  # Show full JSON in Streamlit
+
+            # Step 1: Check Shopping Results
             if "shopping_results" in results and results["shopping_results"]:
                 item = results["shopping_results"][0]
                 price = item.get("price", "N/A")
@@ -45,9 +53,13 @@ class PriceComparator:
                     "URL": item.get("link", "N/A")
                 }
 
+            # Step 2: Try rich snippet in organic results
             for result in results.get("organic_results", []):
+                url = result.get("link", "")
+                if site not in url:
+                    continue
+
                 title = result.get("title", "N/A")
-                url = result.get("link", "N/A")
                 detected = result.get("rich_snippet", {}).get("bottom", {}).get("detected_extensions", {})
 
                 price = "N/A"
@@ -63,19 +75,31 @@ class PriceComparator:
 
                 total_cost = self.calculate_total_cost(price, shipping)
 
-                if price != "N/A":
+                return {
+                    "Platform": site.split('.')[0].capitalize(),
+                    "Title": title,
+                    "Price": price,
+                    "Shipping": shipping,
+                    "Total Cost": total_cost,
+                    "URL": url
+                }
+
+            # Step 3: Fallback to first organic result with domain match
+            for result in results.get("organic_results", []):
+                url = result.get("link", "")
+                if site in url:
                     return {
                         "Platform": site.split('.')[0].capitalize(),
-                        "Title": title,
-                        "Price": price,
-                        "Shipping": shipping,
-                        "Total Cost": total_cost,
+                        "Title": result.get("title", "N/A"),
+                        "Price": "N/A",
+                        "Shipping": "N/A",
+                        "Total Cost": "N/A",
                         "URL": url
                     }
 
             return None
         except Exception as e:
-            print(f"Error searching {site}: {e}")
+            st.error(f"Error searching {site}: {e}")
             return None
 
     def calculate_total_cost(self, price, shipping):
@@ -108,6 +132,11 @@ class PriceComparator:
         ean_gtin = st.text_input("EAN/GTIN")
         use_llm = st.checkbox("Normalize Query with Free LLM (HuggingFace)", value=False)
 
+        # Initialize session state only once
+        if 'updated_results' not in st.session_state:
+            st.session_state['updated_results'] = []
+
+        # Search & Compare button
         if st.button("Search & Compare"):
             query = item_title or upc or asin or ean_gtin
             st.write(f"🔍 Searching for: `{query}`")
@@ -116,27 +145,77 @@ class PriceComparator:
                 query = self.normalize_query_with_llm(query)
                 st.write(f"🧠 Normalized Query: `{query}`")
 
-            # Perform searches
             amazon = self.search_amazon(query)
             walmart = self.search_walmart(query)
             ebay = self.search_ebay(query)
 
-            # Collect results into a list
             results = [res for res in [amazon, walmart, ebay] if res]
 
             if results:
-                # Convert to DataFrame
-                df = pd.DataFrame(results)
+                updated_results = []
+                for i, res in enumerate(results):
+                    updated_results.append({
+                        "Platform": res['Platform'],
+                        "Title": res['Title'],
+                        "Price": res['Price'],
+                        "Shipping": res['Shipping'],
+                        "Total Cost": res['Total Cost'],
+                        "URL": res['URL']
+                    })
+                # Save initial search to session state
+                st.session_state['updated_results'] = updated_results
 
-                # Convert URL to clickable hyperlink
-                df['URL'] = df['URL'].apply(lambda x: f"[Link]({x})" if x != "N/A" else "-")
+        # Show table if we have any results in session
+        if st.session_state['updated_results']:
+            st.markdown("### 💵 Price Comparison Table (Editable)")
 
-                # Display a table with clickable hyperlinks
-                st.markdown("### 💵 Price Comparison Table")
-                st.markdown(
-                    df.to_markdown(index=False),
-                    unsafe_allow_html=True
-                )
-            else:
-                st.warning("No results found!")
+            new_results = []
+            for i, res in enumerate(st.session_state['updated_results']):
+                cols = st.columns([1, 2, 1, 1, 1, 2])
 
+                platform = res['Platform']
+                title = res['Title']
+                price = res['Price']
+                shipping = res['Shipping']
+                total_cost = res['Total Cost']
+                url = res['URL']
+
+                cols[0].markdown(platform)
+                cols[1].markdown(title)
+                new_price = cols[2].text_input(f"Price {i}", price, key=f"price_{i}")
+                new_shipping = cols[3].text_input(f"Ship {i}", shipping, key=f"ship_{i}")
+                new_total = self.calculate_total_cost(new_price, new_shipping)
+                cols[4].markdown(new_total)
+                cols[5].markdown(f"[Link]({url})")
+
+                new_results.append({
+                    "Platform": platform,
+                    "Title": title,
+                    "Price": new_price,
+                    "Shipping": new_shipping,
+                    "Total Cost": new_total,
+                    "URL": url
+                })
+
+            # Update session state with edited values
+            st.session_state['updated_results'] = new_results
+
+            # Download CSV button with timestamped filename
+            df = pd.DataFrame(st.session_state['updated_results'])
+            csv = df.to_csv(index=False).encode('utf-8')
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            filename = f"price_comparison_{timestamp}.csv"
+
+            st.download_button(
+                label="📥 Save Updates and Download CSV",
+                data=csv,
+                file_name=filename,
+                mime='text/csv'
+            )
+
+            # Add Reset button to clear the session only when clicked
+            if st.button("🔄 Reset Table"):
+                st.session_state['updated_results'] = []
+
+        else:
+            st.info("🔍 Please perform a search to display and edit results.")

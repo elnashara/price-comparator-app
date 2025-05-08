@@ -1,6 +1,7 @@
 https://share.streamlit.io/
 DEL-https://price-comparator-app-ggvu9htygprmufdkznmphd.streamlit.app/
 https://price-comparator-app-gzlskjsjyvtgbkpjkxbqea.streamlit.app/
+
 Hue Classic Smooth Denim Skimmer, White, Small 
 
 using local command:
